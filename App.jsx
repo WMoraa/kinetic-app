@@ -509,7 +509,8 @@ function Onboarding({ onComplete }) {
   return null;
 }
 
-// ===== ATHLETE DASHBOARD =====
+
+// ===== ATHLETE DASHBOARD — REDESIGNED =====
 function AthleteDash({ user, token, uname, onLogout }) {
   const [tab, setTab] = useState("today");
   const [weeks, setWeeks] = useState([]);
@@ -517,45 +518,33 @@ function AthleteDash({ user, token, uname, onLogout }) {
   const [selW, setSelW] = useState(null);
   const [comps, setComps] = useState([]);
   const [detail, setDetail] = useState(null);
-  const [fb, setFb] = useState({ r: 0, n: "" });
+  const [fb, setFb] = useState({ effort: 0, pace: "", feel: "", notes: "" });
   const [swap, setSwap] = useState(null);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState("");
   const [currentWeekNum, setCurrentWeekNum] = useState(1);
   const [plan, setPlan] = useState(null);
   const [athleteProfile, setAthleteProfile] = useState(null);
-  const [screenshotUpload, setScreenshotUpload] = useState(null);
+  const [editPlan, setEditPlan] = useState(false);
+  const [editWeek, setEditWeek] = useState(false);
 
   useEffect(() => { load(); }, []);
 
   const load = async () => {
     try {
-      // Load athlete profile for personalization
       const profiles = await api.get("athlete_profiles", token, `user_id=eq.${user.id}&limit=1`);
-      if (profiles && profiles.length > 0) {
-        setAthleteProfile(profiles[0]);
-      }
+      if (profiles && profiles.length > 0) setAthleteProfile(profiles[0]);
       let plans = await api.get("training_plans", token, `athlete_id=eq.${user.id}&status=eq.active&order=created_at.desc&limit=1`);
-      if (!plans || plans.length === 0) {
-        plans = await api.get("training_plans", token, `coach_id=eq.${COACH_ID}&status=eq.active&order=created_at.desc&limit=1`);
-      }
+      if (!plans || plans.length === 0) plans = await api.get("training_plans", token, `coach_id=eq.${COACH_ID}&status=eq.active&order=created_at.desc&limit=1`);
       if (plans && plans.length > 0) {
-        const planData = plans[0];
-        setPlan(planData);
-        const pid = planData.id;
-        const w = await api.get("training_weeks", token, `plan_id=eq.${pid}&order=week_number`);
+        const p = plans[0]; setPlan(p);
+        const w = await api.get("training_weeks", token, `plan_id=eq.${p.id}&order=week_number`);
         setWeeks(w || []);
         if (w && w.length > 0) {
-          const planStart = planData.start_date ? new Date(planData.start_date) : null;
-          const today = new Date();
-          let currentWeekIdx = 0;
-          if (planStart) {
-            const daysSinceStart = Math.floor((today - planStart) / (1000 * 60 * 60 * 24));
-            const weeksSinceStart = Math.floor(daysSinceStart / 7);
-            currentWeekIdx = Math.max(0, Math.min(weeksSinceStart, w.length - 1));
-          }
-          setCurrentWeekNum(w[currentWeekIdx].week_number);
-          setSelW(w[currentWeekIdx].id);
+          const ps = p.start_date ? new Date(p.start_date) : null;
+          let idx = 0;
+          if (ps) { const d = Math.floor((new Date() - ps) / 86400000); idx = Math.max(0, Math.min(Math.floor(d / 7), w.length - 1)); }
+          setCurrentWeekNum(w[idx].week_number); setSelW(w[idx].id);
           const wids = w.map(x => `"${x.id}"`).join(",");
           const wo = await api.get("workouts", token, `week_id=in.(${wids})&order=day_of_week`);
           setWorkouts(wo || []);
@@ -567,562 +556,498 @@ function AthleteDash({ user, token, uname, onLogout }) {
     setLoading(false);
   };
 
-  const toggleDone = (wid) => {
-    if (comps.find(c => c.workout_id === wid)) {
-      setComps(p => p.filter(c => c.workout_id !== wid));
-    } else {
-      setComps(p => [...p, { workout_id: wid, athlete_id: user.id, difficulty_rating: 3 }]);
-      try { api.post("workout_completions", { workout_id: wid, athlete_id: user.id, difficulty_rating: 3 }, token); } catch (e) { }
-    }
-  };
-
-  const saveFb = async () => {
-    if (!detail) return;
-    const compData = { 
-      workout_id: detail.id, 
-      athlete_id: user.id, 
-      difficulty_rating: fb.r, 
-      athlete_notes: fb.n,
-      screenshot_url: screenshotUpload?.data || null
-    };
-    try { await api.post("workout_completions", compData, token); } catch (e) { }
-    setComps(p => [...p, compData]);
-    showToast(screenshotUpload ? "Session logged with screenshot!" : "Session logged! Coach Silas can see your feedback.");
-    setDetail(null);
-    setFb({ r: 0, n: "" });
-    setScreenshotUpload(null);
-  };
-
-  const doSwap = async (wid, newDay) => {
-    try { await api.patch("workouts", `id=eq.${wid}`, { day_of_week: newDay }, token); } catch (e) { }
-    setWorkouts(p => p.map(w => w.id === wid ? { ...w, day_of_week: newDay } : w));
-    setSwap(null);
-    showToast("Workout moved to " + DN[newDay] + "!");
-  };
-
-  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(""), 3000); };
-
+  const showToast = (m) => { setToast(m); setTimeout(() => setToast(""), 3000); };
   const cw = weeks.find(w => w.id === selW);
   const cwk = workouts.filter(w => w.week_id === selW).sort((a, b) => a.day_of_week - b.day_of_week);
   const doneC = cwk.filter(w => comps.some(c => c.workout_id === w.id)).length;
   const totalC = cwk.filter(w => w.workout_type !== "rest").length;
 
-  // SWAP MODAL
+  // Pace calculations
+  const raceDistance = getRaceDistance(plan?.plan_name);
+  const goalSec = athleteProfile?.goal_time_seconds;
+  const racePace = (raceDistance && goalSec) ? goalSec / raceDistance : null;
+  const paces = racePace ? calcPaces(racePace) : null;
+  const hrZones = calcHRZones(athleteProfile?.age);
+
+  // Confidence & metrics
+  const allNonRest = workouts.filter(w => w.workout_type !== "rest");
+  const toDateWorkouts = workouts.filter(w => { const wk = weeks.find(x => x.id === w.week_id); return wk && wk.week_number <= currentWeekNum && w.workout_type !== "rest"; });
+  const confidence = toDateWorkouts.length > 0 ? Math.min(100, Math.round(comps.length / toDateWorkouts.length * 100)) : 0;
+  const totalPlannedKm = toDateWorkouts.reduce((s, w) => s + (w.distance_km || 0), 0);
+  const volumePct = totalPlannedKm > 0 ? Math.min(100, Math.round(comps.length / toDateWorkouts.length * 100)) : 0;
+
+  // Plan dates
+  const raceDate = plan?.end_date ? new Date(plan.end_date) : null;
+  const daysToRace = raceDate ? Math.max(0, Math.floor((raceDate - new Date()) / 86400000)) : null;
+  const planStart = plan?.start_date ? new Date(plan.start_date) : null;
+
+  // Week mileage for overview chart
+  const weekMileages = weeks.map(w => {
+    const wkWorkouts = workouts.filter(x => x.week_id === w.id);
+    return wkWorkouts.reduce((s, x) => s + (x.distance_km || 0), 0);
+  });
+
+  const saveFb = async () => {
+    if (!detail) return;
+    const d = { workout_id: detail.id, athlete_id: user.id, difficulty_rating: fb.effort, athlete_notes: `Pace: ${fb.pace || "—"} | Feel: ${fb.feel || "—"} | ${fb.notes}`.trim() };
+    try { await api.post("workout_completions", d, token); } catch (e) { }
+    setComps(p => [...p, d]);
+    showToast("Session logged!");
+    setDetail(null); setFb({ effort: 0, pace: "", feel: "", notes: "" });
+  };
+
+  const doSwap = async (wid, newDay) => {
+    try { await api.patch("workouts", `id=eq.${wid}`, { day_of_week: newDay }, token); } catch (e) { }
+    setWorkouts(p => p.map(w => w.id === wid ? { ...w, day_of_week: newDay } : w));
+    setSwap(null); showToast("Moved to " + DN[newDay]);
+  };
+
+  // ===== NAV =====
+  const NavBar = () => (
+    <div style={{ position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 430, background: C.card, borderTop: `1px solid ${C.bdr}`, display: "flex", padding: "6px 0 22px", zIndex: 10 }}>
+      {[{ i: "☀️", l: "Today", id: "today" }, { i: "📋", l: "Plan", id: "plan" }, { i: "📅", l: "Train", id: "train" }, { i: "📊", l: "Progress", id: "progress" }, { i: "•••", l: "More", id: "more" }].map(t => (
+        <div key={t.id} onClick={() => setTab(t.id)} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 2, cursor: "pointer" }}>
+          <span style={{ fontSize: 18 }}>{t.i}</span>
+          <span style={{ fontSize: 10, fontWeight: 600, color: tab === t.id ? C.coral : C.tlr }}>{t.l}</span>
+        </div>
+      ))}
+    </div>
+  );
+
+  // ===== SWAP MODAL =====
   if (swap) return (
     <div style={{ maxWidth: 430, margin: "0 auto", background: C.bg, minHeight: "100vh", padding: 20 }}>
-      <Bk onClick={() => setSwap(null)} />
-      <H1>Move workout</H1>
-      <Sb>Pick the new day for "{swap.title}"</Sb>
+      <Bk onClick={() => setSwap(null)} /><H1>Move workout</H1><Sb>Pick the new day for "{swap.title}"</Sb>
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        {[1, 2, 3, 4, 5, 6, 7].map(d => {
-          const isCur = swap.day_of_week === d;
-          return (
-            <div key={d} onClick={() => !isCur && doSwap(swap.id, d)} style={{
-              background: isCur ? C.bdr : C.card, border: `1.5px solid ${C.bdr}`, borderRadius: 12,
-              padding: "16px 18px", cursor: isCur ? "default" : "pointer",
-              display: "flex", justifyContent: "space-between", alignItems: "center", opacity: isCur ? 0.5 : 1,
-            }}>
-              <span style={{ fontWeight: 600, fontSize: 15, color: C.text }}>{DN[d]}</span>
-              {isCur && <span style={{ fontSize: 12, color: C.tlr }}>Current</span>}
-            </div>
-          );
+        {[1,2,3,4,5,6,7].map(d => {
+          const cur = swap.day_of_week === d;
+          return <div key={d} onClick={() => !cur && doSwap(swap.id, d)} style={{ background: cur ? C.bdr : C.card, border: `1.5px solid ${C.bdr}`, borderRadius: 12, padding: "16px 18px", cursor: cur ? "default" : "pointer", display: "flex", justifyContent: "space-between", opacity: cur ? 0.5 : 1 }}><span style={{ fontWeight: 600, fontSize: 15, color: C.text }}>{DN[d]}</span>{cur && <span style={{ fontSize: 12, color: C.tlr }}>Current</span>}</div>;
         })}
       </div>
     </div>
   );
 
-  // WORKOUT DETAIL
+  // ===== WORKOUT DETAIL (Coopah-style) =====
   if (detail) {
     const m = TM[detail.workout_type] || TM.rest;
-    let st = {};
-    try { st = typeof detail.structure === "string" ? JSON.parse(detail.structure) : detail.structure || {}; } catch (e) { }
-
-    // ===== SMART PLAN PERSONALIZATION =====
-    const raceDistance = getRaceDistance(plan?.plan_name);
-    const goalSec = athleteProfile?.goal_time_seconds;
-    const racePace = (raceDistance && goalSec) ? goalSec / raceDistance : null;
-    const paces = racePace ? calcPaces(racePace) : null;
-    const hrZones = calcHRZones(athleteProfile?.age);
-    const zoneNum = parseZone(detail.target_hr_zone);
-    const expMult = EXPERIENCE_MULTIPLIER[athleteProfile?.experience_level] || 1.0;
-
-    // Pace for this specific workout
+    let st = {}; try { st = typeof detail.structure === "string" ? JSON.parse(detail.structure) : detail.structure || {}; } catch (e) { }
+    const isRun = detail.workout_type?.startsWith("run_");
     const paceKey = WORKOUT_PACE_KEY[detail.workout_type];
-    const workoutPace = paces && paceKey ? paces[paceKey] : null;
-
-    // Adjusted duration based on experience
-    const adjustedDuration = detail.duration_minutes ? Math.round(detail.duration_minutes * expMult) : null;
-
-    // HR zone range
-    const hrRange = hrZones && zoneNum ? hrZones[`zone${zoneNum}`] : null;
-
-    const hasPersonalization = (workoutPace || hrRange) && detail.workout_type !== "rest";
+    const wp = paces && paceKey ? paces[paceKey] : null;
+    const zn = parseZone(detail.target_hr_zone);
+    const hr = hrZones && zn ? hrZones[`zone${zn}`] : null;
+    const done = comps.some(c => c.workout_id === detail.id);
+    const isRest = detail.workout_type === "rest";
 
     return (
       <div style={{ maxWidth: 430, margin: "0 auto", background: C.bg, minHeight: "100vh" }}>
-        <div style={{ padding: "14px 20px", display: "flex", alignItems: "center", gap: 12 }}>
+        {/* Header gradient */}
+        {isRun && <div style={{ background: `linear-gradient(135deg, ${C.teal}40 0%, ${C.green}30 100%)`, padding: "50px 20px 20px", borderRadius: "0 0 20px 20px" }}>
+          <button onClick={() => setDetail(null)} style={{ background: "none", border: "none", fontSize: 22, color: C.navy, cursor: "pointer", marginBottom: 10 }}>←</button>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.navy, background: `${C.navy}15`, display: "inline-block", padding: "4px 12px", borderRadius: 20, marginBottom: 10 }}>{m.l}</div>
+          <div style={{ fontSize: 22, fontWeight: 800, color: C.navy }}>{detail.title}</div>
+        </div>}
+        {!isRun && <div style={{ padding: "14px 20px", display: "flex", alignItems: "center", gap: 12 }}>
           <button onClick={() => setDetail(null)} style={{ background: "none", border: "none", fontSize: 22, color: C.tl, cursor: "pointer" }}>←</button>
-          <div style={{ fontSize: 16, fontWeight: 700, color: C.navy }}>Workout Detail</div>
-        </div>
-        <div style={{ padding: "0 20px" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-            <div style={{ width: 7, height: 38, borderRadius: 4, background: m.c }} />
-            <div>
-              <div style={{ fontSize: 11, fontWeight: 700, color: m.c, textTransform: "uppercase", letterSpacing: 0.5 }}>{m.i} {m.l}</div>
-              <div style={{ fontSize: 18, fontWeight: 700, color: C.navy }}>{detail.title}</div>
-            </div>
-          </div>
+          <div><div style={{ fontSize: 11, fontWeight: 700, color: m.c }}>{m.l}</div><div style={{ fontSize: 18, fontWeight: 700, color: C.navy }}>{detail.title}</div></div>
+        </div>}
 
-          {/* PERSONALISED TARGETS CARD */}
-          {hasPersonalization && (
-            <div style={{ background: `linear-gradient(135deg, ${C.navy} 0%, ${C.coral} 100%)`, borderRadius: 14, padding: 16, marginBottom: 14, color: "#fff" }}>
-              <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.9, textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }}>🎯 Your Personalised Targets</div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                {workoutPace && (
-                  <div>
-                    <div style={{ fontSize: 10, opacity: 0.8, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Target Pace</div>
-                    <div style={{ fontSize: 18, fontWeight: 800, marginTop: 2 }}>{fmtPace(workoutPace)}</div>
-                  </div>
-                )}
-                {hrRange && (
-                  <div>
-                    <div style={{ fontSize: 10, opacity: 0.8, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Heart Rate</div>
-                    <div style={{ fontSize: 18, fontWeight: 800, marginTop: 2 }}>{hrRange[0]}–{hrRange[1]} bpm</div>
-                    <div style={{ fontSize: 10, opacity: 0.8, marginTop: 2 }}>Zone {zoneNum}</div>
-                  </div>
-                )}
-                {adjustedDuration && adjustedDuration !== detail.duration_minutes && (
-                  <div>
-                    <div style={{ fontSize: 10, opacity: 0.8, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Your Duration</div>
-                    <div style={{ fontSize: 18, fontWeight: 800, marginTop: 2 }}>~{adjustedDuration} min</div>
-                    <div style={{ fontSize: 10, opacity: 0.8, marginTop: 2 }}>Adjusted for {athleteProfile?.experience_level}</div>
-                  </div>
-                )}
-                {paces && paceKey !== "easy" && (
-                  <div>
-                    <div style={{ fontSize: 10, opacity: 0.8, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Easy Warm-up</div>
-                    <div style={{ fontSize: 18, fontWeight: 800, marginTop: 2 }}>{fmtPace(paces.easy)}</div>
-                  </div>
-                )}
-              </div>
-              {goalSec && raceDistance && (
-                <div style={{ fontSize: 11, opacity: 0.8, marginTop: 10, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,0.15)" }}>
-                  Based on your {Math.floor(goalSec / 3600)}h {Math.floor((goalSec % 3600) / 60)}min goal for {raceDistance}K
-                </div>
-              )}
+        <div style={{ padding: "16px 20px" }}>
+          {/* Time / Distance / Pace cards */}
+          {(detail.duration_minutes || detail.distance_km || wp) && (
+            <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
+              {detail.duration_minutes && <div style={{ flex: 1, background: C.card, borderRadius: 12, padding: "12px 14px", border: `1px solid ${C.bdr}` }}><div style={{ fontSize: 11, color: C.tlr, fontWeight: 600 }}>Time</div><div style={{ fontSize: 16, fontWeight: 700, color: C.navy, marginTop: 2 }}>{detail.duration_minutes >= 60 ? `${Math.floor(detail.duration_minutes/60)}h ${detail.duration_minutes%60}m` : `~${detail.duration_minutes}min`}</div></div>}
+              {detail.distance_km && <div style={{ flex: 1, background: C.card, borderRadius: 12, padding: "12px 14px", border: `1px solid ${C.bdr}` }}><div style={{ fontSize: 11, color: C.tlr, fontWeight: 600 }}>Distance</div><div style={{ fontSize: 16, fontWeight: 700, color: C.navy, marginTop: 2 }}>{detail.distance_km}km</div></div>}
+              {wp && <div style={{ flex: 1, background: C.card, borderRadius: 12, padding: "12px 14px", border: `1px solid ${C.bdr}` }}><div style={{ fontSize: 11, color: C.tlr, fontWeight: 600 }}>Avg pace</div><div style={{ fontSize: 16, fontWeight: 700, color: C.navy, marginTop: 2 }}>{fmtPace(wp)}</div></div>}
             </div>
           )}
 
-          {detail.why_text && <div style={{ background: C.cbg, borderRadius: 12, padding: 14, marginBottom: 14 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: C.coral, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Coach Silas Says</div>
-            <div style={{ fontSize: 13, color: C.text, lineHeight: 1.6 }}>{detail.why_text}</div>
+          {/* Coach's message */}
+          {detail.why_text && <div style={{ background: C.card, borderRadius: 14, padding: 16, border: `1px solid ${C.bdr}`, marginBottom: 16 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}><div style={{ width: 28, height: 28, borderRadius: "50%", background: C.navy, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, color: "#fff", fontWeight: 700 }}>!</div><div style={{ fontSize: 14, fontWeight: 700, color: C.navy }}>Coach's message</div></div>
+            <div style={{ fontSize: 14, color: C.tl, lineHeight: 1.6 }}>{detail.why_text}</div>
           </div>}
-          {detail.description && <div style={{ fontSize: 13, color: C.tl, lineHeight: 1.6, marginBottom: 14 }}>{detail.description}</div>}
-          {(st.warmup || st.main || st.cooldown) && <div style={{ background: C.card, borderRadius: 12, padding: 14, border: `1px solid ${C.bdr}`, marginBottom: 14 }}>
-            {st.warmup && <div style={{ marginBottom: 10 }}><div style={{ fontSize: 11, fontWeight: 700, color: C.green, textTransform: "uppercase", marginBottom: 3 }}>Warm-up{paces ? ` · ${fmtPace(paces.easy)}` : ""}</div><div style={{ fontSize: 13, color: C.text, lineHeight: 1.5 }}>{st.warmup}</div></div>}
-            {st.main && <div style={{ marginBottom: 10 }}><div style={{ fontSize: 11, fontWeight: 700, color: C.coral, textTransform: "uppercase", marginBottom: 3 }}>Main Set{workoutPace ? ` · ${fmtPace(workoutPace)}` : ""}</div><div style={{ fontSize: 13, color: C.text, lineHeight: 1.5 }}>{st.main}</div></div>}
-            {st.cooldown && <div><div style={{ fontSize: 11, fontWeight: 700, color: C.lb, textTransform: "uppercase", marginBottom: 3 }}>Cool-down{paces ? ` · ${fmtPace(paces.easy)}` : ""}</div><div style={{ fontSize: 13, color: C.text, lineHeight: 1.5 }}>{st.cooldown}</div></div>}
+
+          {/* Workout structure */}
+          {(st.warmup || st.main || st.cooldown) && <div style={{ background: C.card, borderRadius: 14, padding: 16, border: `1px solid ${C.bdr}`, marginBottom: 16 }}>
+            {st.warmup && <div style={{ marginBottom: 12 }}><div style={{ fontSize: 11, fontWeight: 700, color: C.green, textTransform: "uppercase", marginBottom: 3 }}>Warm-up {paces ? `· ${fmtPace(paces.easy)}` : ""}</div><div style={{ fontSize: 13, color: C.text, lineHeight: 1.5 }}>{st.warmup}</div></div>}
+            {st.main && <div style={{ marginBottom: 12 }}><div style={{ fontSize: 11, fontWeight: 700, color: C.coral, textTransform: "uppercase", marginBottom: 3 }}>Main Set {wp ? `· ${fmtPace(wp)}` : ""}</div><div style={{ fontSize: 13, color: C.text, lineHeight: 1.5 }}>{st.main}</div></div>}
+            {st.cooldown && <div><div style={{ fontSize: 11, fontWeight: 700, color: C.lb, textTransform: "uppercase", marginBottom: 3 }}>Cool-down {paces ? `· ${fmtPace(paces.easy)}` : ""}</div><div style={{ fontSize: 13, color: C.text, lineHeight: 1.5 }}>{st.cooldown}</div></div>}
           </div>}
-          {detail.coach_notes && <div style={{ background: `${C.navy}06`, borderRadius: 10, padding: "10px 14px", borderLeft: `3px solid ${C.coral}`, marginBottom: 14 }}>
+
+          {/* HR Zone */}
+          {hr && <div style={{ background: C.card, borderRadius: 12, padding: "12px 16px", border: `1px solid ${C.bdr}`, marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div><div style={{ fontSize: 11, color: C.tlr, fontWeight: 600 }}>Heart Rate Zone {zn}</div><div style={{ fontSize: 15, fontWeight: 700, color: C.navy, marginTop: 2 }}>{hr[0]}–{hr[1]} bpm</div></div>
+            <div style={{ fontSize: 11, color: C.tlr }}>Effort: {zn <= 2 ? "3/10" : zn === 3 ? "7/10" : "8/10"}</div>
+          </div>}
+
+          {/* Coach notes */}
+          {detail.coach_notes && <div style={{ background: `${C.navy}06`, borderRadius: 10, padding: "10px 14px", borderLeft: `3px solid ${C.coral}`, marginBottom: 16 }}>
             <div style={{ fontSize: 11, fontWeight: 600, color: C.navy }}>Coach Notes</div>
             <div style={{ fontSize: 12, color: C.tl, lineHeight: 1.5, fontStyle: "italic", marginTop: 2 }}>{detail.coach_notes}</div>
           </div>}
-          {detail.duration_minutes && <div style={{ fontSize: 12, color: C.tlr, marginBottom: 14 }}>Plan duration: {detail.duration_minutes} min {detail.target_hr_zone ? ` | ${detail.target_hr_zone}` : ""}</div>}
-          <div style={{ fontSize: 14, fontWeight: 600, color: C.navy, marginBottom: 10 }}>How did it feel?</div>
-          <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
-            {[1, 2, 3, 4, 5].map(r => (
-              <div key={r} onClick={() => setFb(f => ({ ...f, r }))} style={{
-                flex: 1, padding: "10px 0", borderRadius: 10, textAlign: "center", cursor: "pointer",
-                background: fb.r === r ? C.cbg : C.card, border: `2px solid ${fb.r === r ? C.coral : C.bdr}`,
-              }}>
-                <div style={{ fontSize: 22 }}>{EMO[r]}</div>
-                <div style={{ fontSize: 9, color: C.tlr, marginTop: 2 }}>{EML[r]}</div>
-              </div>
-            ))}
-          </div>
-          <textarea value={fb.n} onChange={e => setFb(f => ({ ...f, n: e.target.value }))} placeholder="Notes for Coach Silas?"
-            style={{ width: "100%", padding: 12, borderRadius: 12, border: `1.5px solid ${C.bdr}`, fontSize: 13, resize: "none", height: 70, outline: "none", boxSizing: "border-box", marginBottom: 14 }} />
 
-          {/* Screenshot upload — Strava/Garmin */}
-          <div style={{ fontSize: 14, fontWeight: 600, color: C.navy, marginBottom: 8 }}>Upload workout screenshot (optional)</div>
-          <div style={{ fontSize: 12, color: C.tlr, marginBottom: 10 }}>Take a screenshot from Strava, Garmin, or your watch app so Coach Silas can see your actual workout data.</div>
-          <label style={{ display: "block", background: screenshotUpload ? `${C.green}08` : C.card, borderRadius: 12, padding: 16, border: `2px dashed ${screenshotUpload ? C.green : C.bdr}`, textAlign: "center", cursor: "pointer", marginBottom: 14 }}>
-            <input type="file" accept="image/*" onChange={(e) => {
-              const file = e.target.files[0];
-              if (file) {
-                const reader = new FileReader();
-                reader.onload = (ev) => setScreenshotUpload({ name: file.name, data: ev.target.result });
-                reader.readAsDataURL(file);
-              }
-            }} style={{ display: "none" }} />
-            {screenshotUpload ? (
-              <div>
-                <img src={screenshotUpload.data} alt="screenshot" style={{ maxWidth: "100%", maxHeight: 200, borderRadius: 8, marginBottom: 8 }} />
-                <div style={{ fontSize: 12, color: C.green, fontWeight: 600 }}>✓ {screenshotUpload.name}</div>
-                <div style={{ fontSize: 11, color: C.tlr, marginTop: 2 }}>Tap to change</div>
-              </div>
-            ) : (
-              <div>
-                <div style={{ fontSize: 26, marginBottom: 4 }}>📸</div>
-                <div style={{ fontSize: 13, fontWeight: 600, color: C.navy }}>Tap to upload screenshot</div>
-                <div style={{ fontSize: 11, color: C.tlr, marginTop: 2 }}>From Strava, Garmin, Apple Watch, etc.</div>
-              </div>
-            )}
-          </label>
+          {/* SESSION CHECK-IN — Coopah style, NO emojis */}
+          {!isRest && !done && (
+            <div style={{ background: C.card, borderRadius: 14, padding: 16, border: `1px solid ${C.bdr}`, marginBottom: 16 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}><span style={{ fontSize: 14 }}>📋</span><span style={{ fontSize: 14, fontWeight: 700, color: C.navy }}>Session check-in</span></div>
+              <div style={{ fontSize: 12, color: C.tlr, marginBottom: 16 }}>Your answers help us adapt your plan for smarter training.</div>
 
-          <Btn dis={!fb.r} onClick={saveFb}>Mark Complete</Btn>
+              <div style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 8 }}>Rate your perceived effort</div>
+              <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
+                {[1,2,3,4,5].map(r => (
+                  <div key={r} onClick={() => setFb(f => ({...f, effort: r}))} style={{ flex: 1, padding: "10px 0", borderRadius: 10, textAlign: "center", cursor: "pointer", background: fb.effort === r ? `${C.navy}15` : C.bg, border: `1.5px solid ${fb.effort === r ? C.navy : C.bdr}`, fontWeight: fb.effort === r ? 700 : 500, fontSize: 15, color: fb.effort === r ? C.navy : C.tl }}>{r}</div>
+                ))}
+              </div>
+
+              <div style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 8 }}>How were your target paces?</div>
+              <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+                {["Too slow", "Just right", "Too fast"].map(o => (
+                  <div key={o} onClick={() => setFb(f => ({...f, pace: o}))} style={{ flex: 1, padding: "10px 6px", borderRadius: 10, textAlign: "center", cursor: "pointer", background: fb.pace === o ? `${C.navy}15` : C.bg, border: `1.5px solid ${fb.pace === o ? C.navy : C.bdr}`, fontWeight: fb.pace === o ? 700 : 500, fontSize: 12, color: fb.pace === o ? C.navy : C.tl }}>{o}</div>
+                ))}
+              </div>
+
+              <div style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 8 }}>How did you feel?</div>
+              <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+                {["Tired", "Normal", "Strong"].map(o => (
+                  <div key={o} onClick={() => setFb(f => ({...f, feel: o}))} style={{ flex: 1, padding: "10px 6px", borderRadius: 10, textAlign: "center", cursor: "pointer", background: fb.feel === o ? `${C.navy}15` : C.bg, border: `1.5px solid ${fb.feel === o ? C.navy : C.bdr}`, fontWeight: fb.feel === o ? 700 : 500, fontSize: 13, color: fb.feel === o ? C.navy : C.tl }}>{o}</div>
+                ))}
+              </div>
+
+              <div style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 8 }}>Your session notes</div>
+              <textarea value={fb.notes} onChange={e => setFb(f => ({...f, notes: e.target.value}))} placeholder="Tap to add notes" maxLength={500}
+                style={{ width: "100%", padding: 12, borderRadius: 12, border: `1.5px solid ${C.bdr}`, fontSize: 13, resize: "none", height: 80, outline: "none", boxSizing: "border-box", marginBottom: 4, background: C.bg }} />
+              <div style={{ fontSize: 11, color: C.tlr, textAlign: "right", marginBottom: 14 }}>{fb.notes.length}/500</div>
+            </div>
+          )}
+
+          {done && <div style={{ background: `${C.green}10`, borderRadius: 12, padding: 16, textAlign: "center", marginBottom: 16, border: `1px solid ${C.green}20` }}><div style={{ fontSize: 15, fontWeight: 700, color: C.green }}>✓ Session Completed</div></div>}
+
+          {!isRest && !done && <Btn dis={!fb.effort} onClick={saveFb}>Save</Btn>}
           <div style={{ height: 30 }} />
         </div>
       </div>
     );
   }
 
-  // TODAY TAB
+  // ===== TODAY TAB =====
   if (tab === "today") {
     const today = new Date();
     const todayDow = today.getDay() === 0 ? 7 : today.getDay();
     const todayWorkouts = cwk.filter(w => w.day_of_week === todayDow);
-    const weekDone = cwk.filter(w => comps.some(c => c.workout_id === w.id)).length;
-    const weekTotal = cwk.filter(w => w.workout_type !== "rest").length;
-
-    // Streak: count consecutive completed weeks
-    let streak = 0;
-    for (let i = currentWeekNum - 1; i >= 1; i--) {
-      const wk = weeks.find(w => w.week_number === i);
-      if (!wk) break;
-      const wkWorkouts = workouts.filter(w => w.week_id === wk.id && w.workout_type !== "rest");
-      const wkDone = wkWorkouts.filter(w => comps.some(c => c.workout_id === w.id)).length;
-      if (wkWorkouts.length > 0 && wkDone >= wkWorkouts.length * 0.6) streak++;
-      else break;
-    }
-    // Add current week to streak if going well
-    if (weekTotal > 0 && weekDone >= weekTotal * 0.6) streak++;
-
-    // Race readiness: total completed workouts / total planned workouts up to current week
-    const planAllWorkouts = workouts.filter(w => w.workout_type !== "rest");
-    const planTotalToDate = workouts.filter(w => {
-      const wk = weeks.find(x => x.id === w.week_id);
-      return wk && wk.week_number <= currentWeekNum && w.workout_type !== "rest";
-    }).length;
-    const planDone = comps.length;
-    const readiness = planTotalToDate > 0 ? Math.min(100, Math.round(planDone / planTotalToDate * 100)) : 0;
-
-    // Days to race
-    const raceDate = plan?.end_date ? new Date(plan.end_date) : null;
-    const daysToRace = raceDate ? Math.max(0, Math.floor((raceDate - today) / (1000 * 60 * 60 * 24))) : null;
+    const tw = todayWorkouts[0];
+    const twDone = tw ? comps.some(c => c.workout_id === tw.id) : false;
+    const twMeta = tw ? (TM[tw.workout_type] || TM.rest) : null;
 
     return (
       <div style={{ maxWidth: 430, margin: "0 auto", background: C.bg, minHeight: "100vh", paddingBottom: 80 }}>
-        <div style={{ padding: "20px 20px 0" }}>
-          <div style={{ fontSize: 13, color: C.tlr }}>
-            {today.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
-          </div>
-          <div style={{ fontSize: 24, fontWeight: 800, color: C.navy, marginTop: 4 }}>
-            Good {today.getHours() < 12 ? "morning" : today.getHours() < 17 ? "afternoon" : "evening"}, {uname || "Athlete"}
-          </div>
+        {/* Header */}
+        <div style={{ padding: "16px 20px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontSize: 22, fontWeight: 800, color: C.navy }}>TODAY</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}><span style={{ fontSize: 14 }}>🔥</span><span style={{ fontSize: 14, fontWeight: 700, color: C.navy }}>{comps.length > 0 ? Math.min(comps.length, 30) : 0}</span></div>
         </div>
 
-        {/* Race Readiness Hero Card */}
-        {plan && (
-          <div style={{ margin: "16px 20px 0", background: `linear-gradient(135deg, ${C.navy} 0%, ${C.coral} 100%)`, borderRadius: 16, padding: 20, color: "#fff", position: "relative", overflow: "hidden" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-              <div>
-                <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.8, textTransform: "uppercase", letterSpacing: 1 }}>Race Readiness</div>
-                <div style={{ fontSize: 44, fontWeight: 800, marginTop: 4, lineHeight: 1 }}>{readiness}%</div>
-                {daysToRace !== null && (
-                  <div style={{ fontSize: 13, opacity: 0.9, marginTop: 6 }}>
-                    {daysToRace > 0 ? `${daysToRace} days to race day` : "Race day!"}
-                  </div>
-                )}
-              </div>
-              <div style={{ textAlign: "right" }}>
-                <div style={{ fontSize: 20, fontWeight: 800 }}>🔥 {streak}</div>
-                <div style={{ fontSize: 10, opacity: 0.8, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Week Streak</div>
-              </div>
-            </div>
-            <div style={{ marginTop: 14, height: 6, borderRadius: 3, background: "rgba(255,255,255,0.2)" }}>
-              <div style={{ height: 6, borderRadius: 3, background: "#fff", width: `${readiness}%`, transition: "width 0.5s" }} />
-            </div>
-          </div>
-        )}
-
-        {/* Quick stats */}
-        <div style={{ display: "flex", gap: 10, padding: "14px 20px" }}>
-          <div style={{ flex: 1, background: C.card, borderRadius: 12, padding: "12px 10px", textAlign: "center", border: `1px solid ${C.bdr}` }}>
-            <div style={{ fontSize: 20, fontWeight: 800, color: C.coral }}>{planDone}</div>
-            <div style={{ fontSize: 10, color: C.tlr, fontWeight: 600, marginTop: 2 }}>Sessions Done</div>
-          </div>
-          <div style={{ flex: 1, background: C.card, borderRadius: 12, padding: "12px 10px", textAlign: "center", border: `1px solid ${C.bdr}` }}>
-            <div style={{ fontSize: 20, fontWeight: 800, color: C.green }}>{weekDone}/{weekTotal}</div>
-            <div style={{ fontSize: 10, color: C.tlr, fontWeight: 600, marginTop: 2 }}>This Week</div>
-          </div>
-          <div style={{ flex: 1, background: C.card, borderRadius: 12, padding: "12px 10px", textAlign: "center", border: `1px solid ${C.bdr}` }}>
-            <div style={{ fontSize: 20, fontWeight: 800, color: C.navy }}>{currentWeekNum}</div>
-            <div style={{ fontSize: 10, color: C.tlr, fontWeight: 600, marginTop: 2 }}>Week</div>
-          </div>
+        {/* Greeting */}
+        <div style={{ padding: "0 20px 14px", borderBottom: `1px solid ${C.bdr}` }}>
+          <div style={{ fontSize: 16, fontWeight: 600, color: C.navy }}>Good {today.getHours() < 12 ? "morning" : today.getHours() < 17 ? "afternoon" : "evening"}, {uname || "Athlete"}</div>
+          <div style={{ fontSize: 13, color: C.tl, marginTop: 2 }}>{cw?.focus_label || "Keep showing up. Every session matters."}</div>
         </div>
 
-        {/* Today's workout */}
-        <div style={{ padding: "0 20px" }}>
-          <div style={{ fontSize: 16, fontWeight: 700, color: C.navy, marginBottom: 12 }}>Today's Session</div>
-          {todayWorkouts.length > 0 ? todayWorkouts.map(w => {
-            const m = TM[w.workout_type] || TM.rest;
-            const isR = w.workout_type === "rest";
-            const done = comps.some(c => c.workout_id === w.id);
-            return (
-              <div key={w.id} onClick={() => !isR && setDetail(w)} style={{
-                background: done ? `${C.green}06` : C.card, borderRadius: 16, padding: 20,
-                border: `1px solid ${done ? `${C.green}20` : C.bdr}`, borderLeft: `5px solid ${m.c}`,
-                cursor: isR ? "default" : "pointer", marginBottom: 10,
-              }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: "#fff", background: m.c, padding: "3px 10px", borderRadius: 16 }}>{m.i} {m.l}</div>
-                  {done && <div style={{ fontSize: 10, fontWeight: 700, color: C.green, background: `${C.green}10`, padding: "3px 8px", borderRadius: 16 }}>Completed ✓</div>}
+        {/* TODAY'S FOCUS */}
+        <div style={{ padding: "16px 20px" }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.tlr, textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 10 }}>Today's Focus</div>
+          {tw ? (
+            <div onClick={() => tw.workout_type !== "rest" && setDetail(tw)} style={{ background: `linear-gradient(135deg, ${twMeta.c}90, ${twMeta.c}60)`, borderRadius: 16, padding: 20, cursor: tw.workout_type === "rest" ? "default" : "pointer", position: "relative" }}>
+              <div style={{ fontSize: 16, fontWeight: 800, color: "#fff", textTransform: "uppercase", marginBottom: 4 }}>{tw.title}</div>
+              <div style={{ fontSize: 13, color: "rgba(255,255,255,0.85)", lineHeight: 1.5 }}>{tw.description?.substring(0, 100)}</div>
+              {(tw.duration_minutes || tw.distance_km) && (
+                <div style={{ fontSize: 13, color: "rgba(255,255,255,0.9)", marginTop: 10 }}>
+                  {tw.duration_minutes && `${tw.duration_minutes >= 60 ? Math.floor(tw.duration_minutes/60)+"h "+tw.duration_minutes%60+"m" : tw.duration_minutes+"min"}`}
+                  {tw.distance_km && ` · ${tw.distance_km}km`}
+                  {wp && ` · ${fmtPace(WORKOUT_PACE_KEY[tw.workout_type] ? paces[WORKOUT_PACE_KEY[tw.workout_type]] : null)}`}
                 </div>
-                <div style={{ fontSize: 18, fontWeight: 700, color: isR ? C.tlr : C.navy, marginBottom: 6 }}>{w.title}</div>
-                {/* Prominent coach message at top of workout — Coopah style */}
-                {w.why_text && !isR && (
-                  <div style={{ background: C.cbg, borderRadius: 10, padding: "10px 14px", margin: "10px 0", borderLeft: `3px solid ${C.coral}` }}>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: C.coral, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 3 }}>Coach Silas Says</div>
-                    <div style={{ fontSize: 13, color: C.text, lineHeight: 1.5, fontStyle: "italic" }}>{w.why_text}</div>
-                  </div>
-                )}
-                <div style={{ fontSize: 13, color: C.tl, lineHeight: 1.5 }}>{w.description}</div>
-                {w.duration_minutes && <div style={{ fontSize: 12, color: C.tlr, marginTop: 8 }}>Duration: {w.duration_minutes} min {w.target_hr_zone ? `| ${w.target_hr_zone}` : ""}</div>}
-                {!isR && !done && <div style={{ marginTop: 12 }}><Btn onClick={(e) => { e.stopPropagation(); setDetail(w); }}>View & Complete</Btn></div>}
+              )}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12 }}>
+                {twDone ? <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#fff" }}><div style={{ width: 22, height: 22, borderRadius: "50%", background: "rgba(255,255,255,0.3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12 }}>✓</div><span style={{ fontSize: 13, fontWeight: 600 }}>Completed</span></div>
+                  : <div style={{ fontSize: 12, color: "rgba(255,255,255,0.7)" }}>Tap to view</div>}
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#fff", background: "rgba(255,255,255,0.2)", padding: "4px 12px", borderRadius: 20 }}>{twMeta.l}</div>
               </div>
-            );
-          }) : (
+            </div>
+          ) : (
             <div style={{ background: C.card, borderRadius: 16, padding: 24, textAlign: "center", border: `1px solid ${C.bdr}` }}>
-              <div style={{ fontSize: 40, marginBottom: 8 }}>😴</div>
+              <div style={{ fontSize: 32, marginBottom: 8 }}>😴</div>
               <div style={{ fontSize: 16, fontWeight: 600, color: C.navy }}>Rest Day</div>
               <div style={{ fontSize: 13, color: C.tl, marginTop: 4 }}>No session today. Recovery is training.</div>
             </div>
           )}
         </div>
 
-        {/* Up next */}
-        {cwk.filter(w => w.day_of_week > todayDow && w.workout_type !== "rest").length > 0 && (
-          <div style={{ padding: "16px 20px 0" }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: C.navy, marginBottom: 10 }}>Coming Up</div>
-            {cwk.filter(w => w.day_of_week > todayDow && w.workout_type !== "rest").slice(0, 3).map(w => {
-              const m = TM[w.workout_type] || TM.rest;
-              return (
-                <div key={w.id} style={{ background: C.card, borderRadius: 10, padding: "10px 14px", border: `1px solid ${C.bdr}`, marginBottom: 6, display: "flex", alignItems: "center", gap: 10, borderLeft: `3px solid ${m.c}` }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: C.tlr, width: 28 }}>{DN[w.day_of_week]}</div>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>{w.title}</div>
-                    {w.duration_minutes && <div style={{ fontSize: 11, color: C.tlr }}>{w.duration_minutes} min</div>}
-                  </div>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: "#fff", background: m.c, padding: "2px 8px", borderRadius: 12 }}>{m.i}</div>
+        {/* YOUR PROGRESS */}
+        <div style={{ padding: "0 20px" }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.tlr, textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 10 }}>Your Progress</div>
+          <div style={{ background: C.card, borderRadius: 16, padding: 20, border: `1px solid ${C.bdr}` }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
+              {/* Confidence gauge */}
+              <div style={{ position: "relative", width: 100, height: 100, flexShrink: 0 }}>
+                <svg width="100" height="100" viewBox="0 0 100 100">
+                  <circle cx="50" cy="50" r="42" fill="none" stroke={C.bdr} strokeWidth="8" strokeDasharray="198 264" strokeLinecap="round" style={{ transform: "rotate(135deg)", transformOrigin: "center" }} />
+                  <circle cx="50" cy="50" r="42" fill="none" stroke={C.teal} strokeWidth="8" strokeDasharray={`${confidence * 1.98} 264`} strokeLinecap="round" style={{ transform: "rotate(135deg)", transformOrigin: "center" }} />
+                </svg>
+                <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)", textAlign: "center" }}>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: C.navy }}>{confidence}%</div>
+                  <div style={{ fontSize: 9, color: C.tlr, fontWeight: 600 }}>Confidence</div>
                 </div>
-              );
-            })}
-          </div>
-        )}
+              </div>
 
-        <Nav tab={tab} setTab={setTab} />
+              {/* Metrics bars */}
+              <div style={{ flex: 1 }}>
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}><span style={{ fontSize: 12, fontWeight: 600, color: C.text }}>Pace</span><span style={{ fontSize: 11, color: C.green, fontWeight: 600 }}>On track</span></div>
+                  <div style={{ height: 6, borderRadius: 3, background: C.bdr }}><div style={{ height: 6, borderRadius: 3, background: C.green, width: `${Math.min(100, confidence + 10)}%` }} /></div>
+                </div>
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}><span style={{ fontSize: 12, fontWeight: 600, color: C.text }}>Volume</span><span style={{ fontSize: 11, color: C.coral, fontWeight: 600 }}>{volumePct}%</span></div>
+                  <div style={{ height: 6, borderRadius: 3, background: C.bdr }}><div style={{ height: 6, borderRadius: 3, background: C.coral, width: `${volumePct}%` }} /></div>
+                </div>
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}><span style={{ fontSize: 12, fontWeight: 600, color: C.text }}>Consistency</span><span style={{ fontSize: 11, color: C.teal, fontWeight: 600 }}>{(confidence / 14).toFixed(1)}</span></div>
+                  <div style={{ height: 6, borderRadius: 3, background: C.bdr }}><div style={{ height: 6, borderRadius: 3, background: C.teal, width: `${Math.min(100, confidence)}%` }} /></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <NavBar />
       </div>
     );
   }
 
-  // PROGRESS TAB
-  if (tab === "progress") {
-    const types = ["run_intervals", "run_tempo", "run_easy", "run_long", "strength", "mobility", "swim", "bike"];
-    const typeCounts = types.map(t => {
-      const total = cwk.filter(w => w.workout_type === t).length;
-      const done = cwk.filter(w => w.workout_type === t && comps.some(c => c.workout_id === w.id)).length;
-      return { type: t, total, done };
-    }).filter(x => x.total > 0);
+  // ===== PLAN TAB =====
+  if (tab === "plan") {
+    return (
+      <div style={{ maxWidth: 430, margin: "0 auto", background: C.bg, minHeight: "100vh", paddingBottom: 80 }}>
+        <div style={{ padding: "16px 20px" }}><div style={{ fontSize: 22, fontWeight: 800, color: C.navy }}>PLAN</div></div>
 
-    // Weekly report generation
-    const avgRating = comps.filter(c => c.difficulty_rating).length > 0
-      ? (comps.filter(c => c.difficulty_rating).reduce((s, c) => s + c.difficulty_rating, 0) / comps.filter(c => c.difficulty_rating).length).toFixed(1)
-      : 0;
-    const completionRate = totalC > 0 ? Math.round(doneC / totalC * 100) : 0;
-    const feedbackCount = comps.filter(c => c.athlete_notes).length;
-    
-    let reportStatus = "";
-    let reportColor = C.green;
-    if (completionRate >= 80) { reportStatus = "Excellent progress"; reportColor = C.green; }
-    else if (completionRate >= 60) { reportStatus = "Good progress"; reportColor = C.teal; }
-    else if (completionRate >= 40) { reportStatus = "Getting there"; reportColor = C.coral; }
-    else { reportStatus = "Needs attention"; reportColor = C.coral; }
+        {/* Current Plan Card */}
+        {plan && <div style={{ margin: "0 20px", background: C.card, borderRadius: 16, padding: 20, border: `1px solid ${C.bdr}`, marginBottom: 16 }}>
+          <div style={{ fontSize: 11, color: C.coral, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1 }}>Current plan</div>
+          <div style={{ fontSize: 20, fontWeight: 800, color: C.navy, marginTop: 4 }}>{athleteProfile?.event_name || plan.plan_name}</div>
+
+          <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+            {goalSec && <div style={{ flex: 1, background: C.bg, borderRadius: 10, padding: "10px 12px" }}><div style={{ fontSize: 10, color: C.tlr }}>Time</div><div style={{ fontSize: 14, fontWeight: 700, color: C.navy }}>{Math.floor(goalSec/3600)}:{String(Math.floor((goalSec%3600)/60)).padStart(2,"0")}:{String(goalSec%60).padStart(2,"0")}</div></div>}
+            {racePace && <div style={{ flex: 1, background: C.bg, borderRadius: 10, padding: "10px 12px" }}><div style={{ fontSize: 10, color: C.tlr }}>Pace</div><div style={{ fontSize: 14, fontWeight: 700, color: C.navy }}>{fmtPace(racePace)}</div></div>}
+            {paces && <div style={{ flex: 1, background: C.bg, borderRadius: 10, padding: "10px 12px" }}><div style={{ fontSize: 10, color: C.tlr }}>Easy pace</div><div style={{ fontSize: 14, fontWeight: 700, color: C.navy }}>{fmtPace(paces.easy)}</div></div>}
+          </div>
+
+          {planStart && raceDate && <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12, fontSize: 13, color: C.tl }}>📅 {planStart.toLocaleDateString("en-GB",{day:"numeric",month:"short"})} – {raceDate.toLocaleDateString("en-GB",{day:"numeric",month:"short"})}</div>}
+          {daysToRace !== null && <div style={{ marginTop: 8, height: 6, borderRadius: 3, background: C.bdr }}><div style={{ height: 6, borderRadius: 3, background: C.green, width: `${Math.max(5, 100 - (daysToRace / (weeks.length * 7) * 100))}%` }} /></div>}
+
+          <div style={{ marginTop: 14 }}><Btn onClick={() => setEditPlan(true)}>Edit plan</Btn></div>
+        </div>}
+
+        {/* PLAN PHASE */}
+        <div style={{ margin: "0 20px", background: C.card, borderRadius: 16, padding: 20, border: `1px solid ${C.bdr}`, marginBottom: 16 }}>
+          <div style={{ fontSize: 16, fontWeight: 800, color: C.navy, marginBottom: 14 }}>PLAN PHASE</div>
+          <div style={{ display: "flex", gap: 14, justifyContent: "center" }}>
+            {[{ n: "Foundation", w: "2 Weeks", c: C.green, active: currentWeekNum <= 2 }, { n: "Build", w: "8 Weeks", c: C.teal, active: currentWeekNum > 2 && currentWeekNum <= 10 }, { n: "Taper", w: "2 Weeks", c: C.purple, active: currentWeekNum > 10 }].map((p, i) => (
+              <div key={i} style={{ textAlign: "center", flex: 1 }}>
+                <div style={{ width: 64, height: 64, borderRadius: "50%", border: `4px solid ${p.active ? p.c : C.bdr}`, margin: "0 auto 8px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <div style={{ fontSize: 20, color: p.active ? p.c : C.tlr }}>{i === 0 ? "〰️" : i === 1 ? "⚡" : "🎯"}</div>
+                </div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: p.active ? C.navy : C.tlr }}>{p.n}</div>
+                <div style={{ fontSize: 11, color: C.tlr }}>{p.w}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* OVERVIEW — Week by week mileage */}
+        <div style={{ margin: "0 20px", background: C.card, borderRadius: 16, padding: 20, border: `1px solid ${C.bdr}` }}>
+          <div style={{ fontSize: 16, fontWeight: 800, color: C.navy, marginBottom: 4 }}>OVERVIEW</div>
+          <div style={{ fontSize: 12, color: C.tlr, marginBottom: 16 }}>Week by week mileage of your plan</div>
+          {weekMileages.length > 0 && (
+            <div style={{ position: "relative", height: 120 }}>
+              <svg width="100%" height="120" viewBox={`0 0 ${weekMileages.length * 60} 120`} style={{ overflow: "visible" }}>
+                {weekMileages.map((km, i) => {
+                  const maxKm = Math.max(...weekMileages, 1);
+                  const x = i * 60 + 30; const y = 100 - (km / maxKm * 80);
+                  const nx = (i + 1) < weekMileages.length ? (i + 1) * 60 + 30 : null;
+                  const ny = nx !== null ? 100 - (weekMileages[i + 1] / maxKm * 80) : null;
+                  return (<g key={i}>
+                    {nx !== null && <line x1={x} y1={y} x2={nx} y2={ny} stroke={C.bdr} strokeWidth="2" />}
+                    <circle cx={x} cy={y} r="5" fill={i + 1 <= currentWeekNum ? C.teal : C.bdr} stroke="#fff" strokeWidth="2" />
+                    <text x={x} y={y - 12} textAnchor="middle" fill={C.navy} fontSize="10" fontWeight="700">{Math.round(km)}km</text>
+                    <text x={x} y={115} textAnchor="middle" fill={C.tlr} fontSize="9">W{i+1}</text>
+                  </g>);
+                })}
+              </svg>
+            </div>
+          )}
+        </div>
+
+        <NavBar />
+      </div>
+    );
+  }
+
+  // ===== TRAIN TAB (Coopah-style weekly view) =====
+  if (tab === "train") {
+    const weekStartDate = cw?.start_date ? new Date(cw.start_date) : planStart ? new Date(planStart.getTime() + (currentWeekNum - 1) * 7 * 86400000) : new Date();
+    const weekTotalKm = cwk.reduce((s, w) => s + (w.distance_km || 0), 0);
+    const weekTotalMin = cwk.reduce((s, w) => s + (w.duration_minutes || 0), 0);
 
     return (
       <div style={{ maxWidth: 430, margin: "0 auto", background: C.bg, minHeight: "100vh", paddingBottom: 80 }}>
-        <div style={{ padding: "16px 20px", background: "rgba(244,241,248,0.95)", position: "sticky", top: 0, zIndex: 10, borderBottom: `1px solid ${C.bdr}` }}>
-          <div style={{ fontSize: 20, fontWeight: 800, color: C.navy }}>Progress</div>
-          <div style={{ fontSize: 13, color: C.tlr }}>{cw?.focus_label || "Your training progress"}</div>
+        {/* Header */}
+        <div style={{ padding: "16px 20px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontSize: 22, fontWeight: 800, color: C.navy }}>TRAIN</div>
         </div>
-        <div style={{ padding: 20 }}>
-          {/* Weekly Report Card */}
-          <div style={{ background: C.card, borderRadius: 14, padding: 20, border: `1px solid ${C.bdr}`, marginBottom: 16, borderLeft: `4px solid ${reportColor}` }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
-              <div>
-                <div style={{ fontSize: 11, fontWeight: 700, color: reportColor, textTransform: "uppercase", letterSpacing: 1 }}>Weekly Report</div>
-                <div style={{ fontSize: 18, fontWeight: 800, color: C.navy, marginTop: 2 }}>{reportStatus}</div>
-              </div>
-              <div style={{ fontSize: 34, fontWeight: 800, color: reportColor }}>{completionRate}%</div>
-            </div>
-            <div style={{ fontSize: 13, color: C.tl, lineHeight: 1.5, marginTop: 6 }}>
-              You have completed <strong>{doneC} of {totalC}</strong> planned sessions this week.
-              {avgRating > 0 && <> Average effort rating: <strong>{avgRating}/5</strong>.</>}
-              {feedbackCount > 0 && <> You left <strong>{feedbackCount}</strong> notes for Coach Silas.</>}
-            </div>
-            <div style={{ background: `${C.navy}06`, borderRadius: 10, padding: "10px 14px", marginTop: 12, borderLeft: `3px solid ${C.coral}` }}>
-              <div style={{ fontSize: 11, fontWeight: 600, color: C.navy }}>Coach Note</div>
-              <div style={{ fontSize: 12, color: C.tl, lineHeight: 1.5, marginTop: 3, fontStyle: "italic" }}>
-                {completionRate >= 80 ? "Excellent consistency. Trust the process — you're building real fitness." :
-                  completionRate >= 60 ? "Solid week. Keep showing up. Consistency beats intensity." :
-                  completionRate >= 40 ? "Every session counts. Focus on showing up this week." :
-                  "Let me know what's blocking you. We can adjust the plan."}
-              </div>
-            </div>
-          </div>
 
-          <div style={{ fontSize: 16, fontWeight: 700, color: C.navy, marginBottom: 12 }}>By Session Type</div>
-          {typeCounts.map(({ type, total, done }) => {
-            const m = TM[type] || TM.rest;
+        {/* Week selector */}
+        <div style={{ padding: "0 20px 12px", textAlign: "center" }}>
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 12 }}>
+            <button onClick={() => { const prev = weeks.find(w => w.week_number === (cw?.week_number || 1) - 1); if (prev) setSelW(prev.id); }} style={{ background: "none", border: "none", fontSize: 18, color: C.tl, cursor: "pointer" }}>‹</button>
+            <div><div style={{ fontSize: 15, fontWeight: 700, color: C.navy }}>Week {cw?.week_number || 1}</div><div style={{ fontSize: 12, color: C.tlr }}>{Math.round(weekTotalKm)}km · {weekTotalMin >= 60 ? `${Math.floor(weekTotalMin/60)}h ${weekTotalMin%60}min` : `${weekTotalMin}min`}</div></div>
+            <button onClick={() => { const next = weeks.find(w => w.week_number === (cw?.week_number || 1) + 1); if (next) setSelW(next.id); }} style={{ background: "none", border: "none", fontSize: 18, color: C.tl, cursor: "pointer" }}>›</button>
+          </div>
+        </div>
+
+        {/* Focus label */}
+        {cw && <div style={{ padding: "0 20px 8px", fontSize: 12, color: C.teal, fontWeight: 600 }}>Week {cw.week_number}: {cw.focus_label}</div>}
+
+        {/* Workout list — Coopah style */}
+        <div style={{ padding: "0 0 10px" }}>
+          {cwk.map(w => {
+            const m = TM[w.workout_type] || TM.rest;
+            const isR = w.workout_type === "rest";
+            const done = comps.some(c => c.workout_id === w.id);
+            const dayDate = weekStartDate ? new Date(weekStartDate.getTime() + (w.day_of_week - 1) * 86400000) : null;
+            const isToday = dayDate && dayDate.toDateString() === new Date().toDateString();
+
             return (
-              <div key={type} style={{ background: C.card, borderRadius: 12, padding: "14px 16px", border: `1px solid ${C.bdr}`, marginBottom: 8, display: "flex", alignItems: "center", gap: 12 }}>
-                <div style={{ fontSize: 18 }}>{m.i}</div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}><span style={{ fontSize: 13, fontWeight: 600, color: C.text }}>{m.l}</span><span style={{ fontSize: 12, color: C.tlr }}>{done}/{total}</span></div>
-                  <div style={{ height: 6, borderRadius: 3, background: C.bdr }}><div style={{ height: 6, borderRadius: 3, background: m.c, width: `${total > 0 ? done / total * 100 : 0}%` }} /></div>
+              <div key={w.id} onClick={() => !isR && setDetail(w)} style={{ display: "flex", alignItems: "stretch", padding: "0 20px", cursor: isR ? "default" : "pointer" }}>
+                {/* Day label */}
+                <div style={{ width: 52, paddingTop: 14, paddingBottom: 14, textAlign: "center", flexShrink: 0 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: isToday ? C.coral : C.tlr, textTransform: "uppercase" }}>{DN[w.day_of_week]}</div>
+                  {dayDate && <div style={{ fontSize: 10, color: C.tlr }}>{dayDate.getDate()} {dayDate.toLocaleDateString("en-US", { month: "short" }).toUpperCase()}</div>}
+                </div>
+
+                {/* Color bar */}
+                <div style={{ width: 4, borderRadius: 2, background: isR ? C.bdr : m.c, margin: "8px 12px", flexShrink: 0 }} />
+
+                {/* Content */}
+                <div style={{ flex: 1, padding: "12px 0", borderBottom: `1px solid ${C.bdr}`, display: "flex", alignItems: "center", justifyContent: "space-between", background: done ? `${C.green}04` : "transparent", opacity: isR ? 0.5 : 1 }}>
+                  <div>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: isR ? C.tlr : C.text }}>{w.title}</div>
+                    {!isR && <div style={{ fontSize: 12, color: C.tlr, marginTop: 2 }}>
+                      {w.duration_minutes && `~${w.duration_minutes >= 60 ? Math.floor(w.duration_minutes/60)+"h "+w.duration_minutes%60+"m" : w.duration_minutes+"min"}`}
+                      {w.distance_km && ` · ${w.distance_km}km`}
+                    </div>}
+                  </div>
+                  {done && <div style={{ width: 24, height: 24, borderRadius: "50%", background: C.green, display: "flex", alignItems: "center", justifyContent: "center" }}><span style={{ color: "#fff", fontSize: 13, fontWeight: 700 }}>✓</span></div>}
+                  {!isR && !done && <div style={{ fontSize: 18, color: C.bdr }}>›</div>}
                 </div>
               </div>
             );
           })}
-
-          {/* Recent feedback */}
-          {comps.filter(c => c.athlete_notes).length > 0 && (
-            <>
-              <div style={{ fontSize: 16, fontWeight: 700, color: C.navy, marginTop: 20, marginBottom: 10 }}>Your Recent Notes</div>
-              {comps.filter(c => c.athlete_notes).slice(-3).reverse().map((c, i) => {
-                const w = workouts.find(x => x.id === c.workout_id);
-                return (
-                  <div key={i} style={{ background: C.card, borderRadius: 10, padding: "10px 14px", border: `1px solid ${C.bdr}`, marginBottom: 6 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between" }}>
-                      <span style={{ fontSize: 13, fontWeight: 600, color: C.text }}>{w?.title || "Workout"}</span>
-                      <span style={{ fontSize: 16 }}>{EMO[c.difficulty_rating] || ""}</span>
-                    </div>
-                    <div style={{ fontSize: 12, color: C.tl, marginTop: 3, fontStyle: "italic" }}>{c.athlete_notes}</div>
-                  </div>
-                );
-              })}
-            </>
-          )}
         </div>
-        <Nav tab={tab} setTab={setTab} />
+
+        <NavBar />
+        {toast && <div style={{ position: "fixed", bottom: 80, left: "50%", transform: "translateX(-50%)", background: C.navy, color: "#fff", padding: "12px 22px", borderRadius: 12, fontSize: 13, boxShadow: "0 8px 30px rgba(27,43,90,0.25)", maxWidth: 340, textAlign: "center", zIndex: 20 }}>{toast}</div>}
       </div>
     );
   }
 
-  // PROFILE TAB
-  if (tab === "profile") return (
+  // ===== PROGRESS TAB =====
+  if (tab === "progress") {
+    return (
+      <div style={{ maxWidth: 430, margin: "0 auto", background: C.bg, minHeight: "100vh", paddingBottom: 80 }}>
+        <div style={{ padding: "16px 20px" }}><div style={{ fontSize: 22, fontWeight: 800, color: C.navy }}>PROGRESS</div></div>
+
+        {/* Goal Confidence */}
+        <div style={{ margin: "0 20px 16px", background: C.card, borderRadius: 16, padding: 20, border: `1px solid ${C.bdr}` }}>
+          {goalSec && <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}><div style={{ width: 3, height: 24, borderRadius: 2, background: C.navy }} /><div><div style={{ fontSize: 18, fontWeight: 800, color: C.navy }}>{Math.floor(goalSec/3600)}:{String(Math.floor((goalSec%3600)/60)).padStart(2,"0")}:{String(goalSec%60).padStart(2,"0")}</div><div style={{ fontSize: 11, color: C.tlr }}>Your target time</div></div></div>}
+          <div style={{ display: "flex", justifyContent: "center", margin: "10px 0" }}>
+            <div style={{ position: "relative", width: 140, height: 140 }}>
+              <svg width="140" height="140" viewBox="0 0 140 140">
+                <circle cx="70" cy="70" r="56" fill="none" stroke={C.bdr} strokeWidth="10" strokeDasharray="264 352" strokeLinecap="round" style={{ transform: "rotate(135deg)", transformOrigin: "center" }} />
+                <circle cx="70" cy="70" r="56" fill="none" stroke={C.teal} strokeWidth="10" strokeDasharray={`${confidence * 2.64} 352`} strokeLinecap="round" style={{ transform: "rotate(135deg)", transformOrigin: "center" }} />
+              </svg>
+              <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)", textAlign: "center" }}>
+                <div style={{ fontSize: 32, fontWeight: 800, color: C.navy }}>{confidence}%</div>
+                <div style={{ fontSize: 11, color: C.tlr }}>Confidence</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Training Metrics */}
+        <div style={{ padding: "0 20px 16px" }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.tlr, textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 10 }}>Training Metrics</div>
+          {[
+            { n: "Pace", v: "On track", c: C.green, pct: Math.min(100, confidence + 10), desc: "How your completed speed work compares to planned target paces." },
+            { n: "Volume", v: `${volumePct}%`, c: C.coral, pct: volumePct, desc: "Total distance completed vs planned runs." },
+            { n: "Consistency", v: (confidence / 14).toFixed(1), c: C.teal, pct: Math.min(100, confidence), desc: "How consistently you've completed planned training." }
+          ].map((m, i) => (
+            <div key={i} style={{ background: C.card, borderRadius: 14, padding: 16, border: `1px solid ${C.bdr}`, marginBottom: 10 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}><span style={{ fontSize: 14, fontWeight: 600, color: C.text }}>{m.n}</span><span style={{ fontSize: 13, fontWeight: 700, color: m.c }}>{m.v}</span></div>
+              <div style={{ height: 6, borderRadius: 3, background: C.bdr, marginBottom: 8 }}><div style={{ height: 6, borderRadius: 3, background: m.c, width: `${m.pct}%` }} /></div>
+              <div style={{ fontSize: 12, color: C.tl, lineHeight: 1.5 }}>{m.desc}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Weekly Coach Report */}
+        <div style={{ margin: "0 20px", background: C.card, borderRadius: 16, padding: 20, border: `1px solid ${C.bdr}` }}>
+          <div style={{ fontSize: 16, fontWeight: 800, color: C.navy, marginBottom: 14 }}>WEEKLY COACH REPORT</div>
+          <div style={{ fontSize: 12, fontWeight: 600, color: C.tl, marginBottom: 12 }}>Week {currentWeekNum} Summary</div>
+          <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+            <div style={{ flex: 1, background: C.bg, borderRadius: 12, padding: 14, textAlign: "center" }}>
+              <div style={{ fontSize: 24, fontWeight: 800, color: C.navy }}>{doneC}</div>
+              <div style={{ fontSize: 11, color: C.tlr }}>of {totalC} sessions</div>
+            </div>
+            <div style={{ flex: 1, background: C.bg, borderRadius: 12, padding: 14, textAlign: "center" }}>
+              <div style={{ fontSize: 24, fontWeight: 800, color: C.navy }}>{Math.round(cwk.filter(w => comps.some(c => c.workout_id === w.id)).reduce((s, w) => s + (w.distance_km || 0), 0))}km</div>
+              <div style={{ fontSize: 11, color: C.tlr }}>of {Math.round(cwk.reduce((s, w) => s + (w.distance_km || 0), 0))}km target</div>
+            </div>
+          </div>
+
+          {/* Coach insight */}
+          <div style={{ background: `${C.navy}06`, borderRadius: 10, padding: "12px 14px", borderLeft: `3px solid ${C.coral}` }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: C.navy }}>Coach's Insight</div>
+            <div style={{ fontSize: 13, color: C.tl, lineHeight: 1.5, marginTop: 4 }}>
+              {doneC >= totalC ? "Perfect week! Every session completed. Outstanding commitment." :
+                doneC >= totalC * 0.6 ? "Solid week. Keep this consistency going and trust the process." :
+                "Focus on completing your key sessions this week. Show up, even when it's hard."}
+            </div>
+          </div>
+        </div>
+
+        <NavBar />
+      </div>
+    );
+  }
+
+  // ===== MORE TAB =====
+  if (tab === "more") return (
     <div style={{ maxWidth: 430, margin: "0 auto", background: C.bg, minHeight: "100vh", paddingBottom: 80 }}>
-      <div style={{ padding: "16px 20px", borderBottom: `1px solid ${C.bdr}` }}><div style={{ fontSize: 20, fontWeight: 800, color: C.navy }}>Profile</div></div>
-      <div style={{ padding: 20 }}>
+      <div style={{ padding: "16px 20px" }}><div style={{ fontSize: 22, fontWeight: 800, color: C.navy }}>MORE</div></div>
+      <div style={{ padding: "0 20px" }}>
         <div style={{ background: C.card, borderRadius: 16, padding: 24, border: `1px solid ${C.bdr}`, textAlign: "center", marginBottom: 20 }}>
           <div style={{ width: 64, height: 64, borderRadius: "50%", background: C.cbg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, fontWeight: 700, color: C.coral, margin: "0 auto 12px" }}>{(uname || "A")[0]}</div>
           <div style={{ fontSize: 18, fontWeight: 700, color: C.navy }}>{uname || "Athlete"}</div>
           <div style={{ fontSize: 13, color: C.tlr, marginTop: 4 }}>{user?.email}</div>
+          {athleteProfile && <div style={{ fontSize: 12, color: C.tl, marginTop: 8 }}>{athleteProfile.sport_type} · {athleteProfile.experience_level} · Age {athleteProfile.age}</div>}
         </div>
         <div style={{ marginTop: 20 }}><Btn sec onClick={onLogout}>Log Out</Btn></div>
       </div>
-      <Nav tab={tab} setTab={setTab} />
+      <NavBar />
     </div>
   );
 
-  // PLAN TAB
-  const selWeekObj = weeks.find(w => w.id === selW);
-  const isLocked = selWeekObj && selWeekObj.week_number > currentWeekNum;
-  return (
-    <div style={{ maxWidth: 430, margin: "0 auto", background: C.bg, minHeight: "100vh", paddingBottom: 80 }}>
-      <div style={{ padding: "14px 20px", background: "rgba(244,241,248,0.95)", position: "sticky", top: 0, zIndex: 10, borderBottom: `1px solid ${C.bdr}` }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div>
-            <div style={{ fontSize: 13, color: C.tlr }}>Training Plan</div>
-            <div style={{ fontSize: 20, fontWeight: 800, color: C.navy }}>{plan?.plan_name || "Your Plan"}</div>
-          </div>
-          <div style={{ fontSize: 18, fontWeight: 800, color: C.navy }}>K<span style={{ color: C.coral }}>.</span></div>
-        </div>
-      </div>
-      {loading ? <div style={{ padding: 40, textAlign: "center", color: C.tlr }}>Loading your plan...</div> : (
-        <>
-          {weeks.length > 0 && <div style={{ padding: "12px 20px 0" }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: C.tlr, textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 8 }}>Select Week</div>
-            <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 6 }}>
-              {weeks.map(w => {
-                const sel = w.id === selW;
-                const ph = w.focus_label?.split("—")?.[0]?.trim() || "Base";
-                const pc = PHASES[ph]?.color || C.green;
-                const locked = w.week_number > currentWeekNum;
-                return (
-                  <div key={w.id} onClick={() => setSelW(w.id)} style={{
-                    minWidth: 38, height: 38, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center",
-                    background: sel ? pc : locked ? "#F0EDF5" : C.card,
-                    color: sel ? "#fff" : locked ? C.tlr : C.text,
-                    fontWeight: 700, fontSize: 14, cursor: "pointer",
-                    border: `2px solid ${sel ? pc : locked ? C.bdr : C.bdr}`,
-                    flexShrink: 0, position: "relative", opacity: locked && !sel ? 0.6 : 1,
-                  }}>
-                    {w.week_number}
-                    {locked && <div style={{ position: "absolute", top: -4, right: -4, background: C.tlr, borderRadius: "50%", width: 14, height: 14, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 8 }}>🔒</div>}
-                  </div>
-                );
-              })}
-            </div>
-          </div>}
-          {cw && <div style={{ margin: "10px 20px 0", padding: 14, borderRadius: 12, background: isLocked ? `${C.tlr}10` : `${C.green}10`, border: `1px solid ${isLocked ? `${C.tlr}20` : `${C.green}20`}` }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: isLocked ? C.tlr : C.green, textTransform: "uppercase", letterSpacing: 1 }}>{cw.focus_label}</div>
-            <div style={{ fontSize: 12, color: C.tl, marginTop: 4 }}>Week {cw.week_number} {isLocked ? "— Unlocks as you progress" : `— ${doneC}/${totalC} sessions`}</div>
-            {!isLocked && <div style={{ marginTop: 6, height: 5, borderRadius: 3, background: C.bdr }}><div style={{ height: 5, borderRadius: 3, background: C.green, width: `${totalC ? doneC / totalC * 100 : 0}%` }} /></div>}
-          </div>}
-          {isLocked && (
-            <div style={{ margin: "14px 20px", padding: "20px 16px", background: C.card, borderRadius: 12, border: `1px dashed ${C.bdr}`, textAlign: "center" }}>
-              <div style={{ fontSize: 36, marginBottom: 8 }}>🔒</div>
-              <div style={{ fontSize: 14, fontWeight: 600, color: C.navy, marginBottom: 4 }}>Week {cw?.week_number} is locked</div>
-              <div style={{ fontSize: 13, color: C.tl, lineHeight: 1.5, marginBottom: 12 }}>Complete Week {currentWeekNum} first. Coach Silas will reveal future sessions as you progress — this keeps your training responsive to how your body is adapting.</div>
-              <div style={{ fontSize: 12, color: C.coral, fontWeight: 600 }}>Focus on what's in front of you.</div>
-            </div>
-          )}
-          {!isLocked && <div style={{ padding: "10px 0" }}>
-            {cwk.map(w => {
-              const m = TM[w.workout_type] || TM.rest;
-              const isR = w.workout_type === "rest";
-              const done = comps.some(c => c.workout_id === w.id);
-              return (
-                <div key={w.id} style={{ marginBottom: 6 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 20px 3px" }}>
-                    <div style={{ fontSize: 11, fontWeight: 700, color: C.tlr, textTransform: "uppercase", width: 28 }}>{DN[w.day_of_week]}</div>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: "#fff", background: m.c, padding: "2px 8px", borderRadius: 14 }}>{m.i} {m.l}</div>
-                  </div>
-                  <div style={{ margin: "0 20px", padding: "12px 14px", background: done ? `${C.green}06` : C.card, borderLeft: `4px solid ${m.c}`, borderRadius: 10, border: `1px solid ${done ? `${C.green}20` : C.bdr}`, display: "flex", alignItems: "flex-start", gap: 10 }}>
-                    {!isR && <div onClick={(e) => { e.stopPropagation(); toggleDone(w.id); }} style={{ width: 20, height: 20, borderRadius: 6, marginTop: 1, border: `2px solid ${done ? C.green : C.bdr}`, background: done ? C.green : "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}>{done && <span style={{ color: "#fff", fontSize: 12, fontWeight: 700 }}>✓</span>}</div>}
-                    <div style={{ flex: 1, cursor: isR ? "default" : "pointer" }} onClick={() => !isR && setDetail(w)}>
-                      <div style={{ fontSize: 14, fontWeight: 600, color: isR ? C.tlr : C.text, textDecoration: done ? "line-through" : "none" }}>{w.title}</div>
-                      <div style={{ fontSize: 12, color: C.tlr, marginTop: 2, lineHeight: 1.4 }}>{w.description?.substring(0, 80)}{(w.description?.length || 0) > 80 ? "..." : ""}</div>
-                      {w.duration_minutes && <div style={{ fontSize: 11, color: C.tlr, marginTop: 3 }}>Duration: {w.duration_minutes} min</div>}
-                    </div>
-                    {!isR && <div onClick={(e) => { e.stopPropagation(); setSwap(w); }} style={{ fontSize: 10, fontWeight: 700, color: C.coral, textTransform: "uppercase", cursor: "pointer", flexShrink: 0, marginTop: 2 }}>Move</div>}
-                  </div>
-                </div>
-              );
-            })}
-          </div>}
-          {weeks.length === 0 && <div style={{ padding: 40, textAlign: "center" }}>
-            <div style={{ fontSize: 40, marginBottom: 16 }}>📋</div>
-            <div style={{ fontSize: 16, fontWeight: 600, color: C.navy }}>No plan yet</div>
-            <div style={{ fontSize: 13, color: C.tl, marginTop: 8 }}>Coach Silas will assign your plan soon.</div>
-          </div>}
-        </>
-      )}
-      <Nav tab={tab} setTab={setTab} />
-      {toast && <div style={{ position: "fixed", bottom: 80, left: "50%", transform: "translateX(-50%)", background: C.navy, color: "#fff", padding: "12px 22px", borderRadius: 12, fontSize: 13, fontWeight: 500, boxShadow: "0 8px 30px rgba(27,43,90,0.25)", maxWidth: 340, textAlign: "center", zIndex: 20 }}>{toast}</div>}
-    </div>
-  );
+  // Default
+  return <div style={{ maxWidth: 430, margin: "0 auto", background: C.bg, minHeight: "100vh", padding: 40, textAlign: "center", color: C.tlr }}>Loading...</div>;
 }
 
 // ===== COACH DASHBOARD =====
